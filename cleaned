@@ -1,87 +1,229 @@
-// ===== ORIGINAL FILE (UserService.cs) =====
-using System;
-using System.Collections.Generic;
-using System.Linq;
+<#
+.SYNOPSIS
+    Creates censored versions of C# files with only signatures (no implementation)
+.PARAMETER RootPath
+    Root directory to scan (defaults to current directory)
+.PARAMETER OutputPath
+    Directory to save censored files (defaults to .\Censored)
+.PARAMETER ExcludePatterns
+    Patterns to exclude (defaults to common test/generated paths)
+#>
 
-namespace MyApp.Services
-{
-    /// <summary>
-    /// Handles user management operations
-    /// </summary>
-    public class UserService
-    {
-        private readonly IUserRepository _repository;
-        private readonly ILogger _logger;
+param(
+    [string]$RootPath = ".",
+    [string]$OutputPath = ".\Censored",
+    [string[]]$ExcludePatterns = @("*\bin\*", "*\obj\*", "*\Migrations\*", "*.Designer.cs", "*.g.cs", "*.g.i.cs")
+)
+
+function Get-CensoredContent {
+    param(
+        [string]$Content
+    )
+    
+    $lines = $Content -split "`r?`n"
+    $output = @()
+    $braceDepth = 0
+    $inMethodBody = $false
+    $methodBodyStartDepth = 0
+    $skipUntilCloseBrace = $false
+    
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        $trimmed = $line.TrimStart()
         
-        public UserService(IUserRepository repository, ILogger logger)
-        {
-            _repository = repository;
-            _logger = logger;
+        # Count braces on this line
+        $openBraces = ($line.ToCharArray() | Where-Object { $_ -eq '{' }).Count
+        $closeBraces = ($line.ToCharArray() | Where-Object { $_ -eq '}' }).Count
+        
+        # Always keep: using statements, namespace declarations, attributes
+        if ($trimmed -match '^\s*using\s+' -or 
+            $trimmed -match '^\s*namespace\s+' -or 
+            $trimmed -match '^\s*\[') {
+            $output += $line
+            $braceDepth += $openBraces - $closeBraces
+            continue
         }
-
-        public string AdminEmail { get; set; } = "admin@example.com";
         
-        public int MaxLoginAttempts { get; } = 3;
-
-        public async Task<User> GetUserByIdAsync(int userId)
-        {
-            _logger.LogInformation($"Fetching user {userId}");
+        # Keep class/interface/struct/enum/record declarations
+        if ($trimmed -match '^\s*(public|private|protected|internal|static|abstract|sealed|partial)*\s*(class|interface|struct|enum|record)\s+') {
+            $output += $line
+            $braceDepth += $openBraces - $closeBraces
+            continue
+        }
+        
+        # Keep property declarations (but remove getters/setters body if they have one)
+        if ($trimmed -match '^\s*(public|private|protected|internal|static|virtual|override)*\s+[\w\<\>\[\]]+\s+\w+\s*{\s*(get|set)') {
+            # Property with auto-implemented accessors
+            if ($trimmed -match '{\s*get;\s*set;\s*}' -or 
+                $trimmed -match '{\s*get;\s*}' -or
+                $trimmed -match '{\s*get;\s*init;\s*}') {
+                $output += $line
+            } else {
+                # Property with body - keep signature only
+                $propSignature = $trimmed -replace '{.*$', '{ get; set; }'
+                $output += $line -replace $trimmed, $propSignature
+                $skipUntilCloseBrace = $true
+                $methodBodyStartDepth = $braceDepth
+            }
+            $braceDepth += $openBraces - $closeBraces
+            continue
+        }
+        
+        # Keep method/constructor signatures (remove body)
+        if ($trimmed -match '^\s*(public|private|protected|internal|static|virtual|override|async|abstract)*\s+[\w\<\>\[\]]+\s+\w+\s*\(') {
+            # Check if it's a method declaration
+            if ($openBraces -gt 0) {
+                # Method with body on same line
+                $methodSignature = $line -replace '{.*$', '{ }'
+                $output += $methodSignature
+                $inMethodBody = $true
+                $methodBodyStartDepth = $braceDepth
+                $braceDepth += $openBraces - $closeBraces
+                continue
+            } else {
+                # Signature continues on next line
+                $output += $line
+                $braceDepth += $openBraces - $closeBraces
+                continue
+            }
+        }
+        
+        # Keep field declarations (simple ones)
+        if ($trimmed -match '^\s*(public|private|protected|internal|static|readonly|const)*\s+[\w\<\>\[\]]+\s+\w+\s*(=|;)') {
+            # Remove initialization if present
+            if ($trimmed -match '=') {
+                $fieldSignature = $trimmed -replace '=.*$', ';'
+                $output += $line -replace $trimmed, $fieldSignature
+            } else {
+                $output += $line
+            }
+            continue
+        }
+        
+        # Handle opening brace for method body
+        if ($trimmed -eq '{' -and -not $inMethodBody) {
+            $output += $line
+            $braceDepth++
+            $inMethodBody = $true
+            $methodBodyStartDepth = $braceDepth
+            continue
+        }
+        
+        # Skip method/property body content
+        if ($inMethodBody -or $skipUntilCloseBrace) {
+            $braceDepth += $openBraces - $closeBraces
             
-            var user = await _repository.GetByIdAsync(userId);
-            
-            if (user == null)
-            {
-                throw new UserNotFoundException($"User {userId} not found");
+            # Check if we've closed the method/property body
+            if ($braceDepth -lt $methodBodyStartDepth) {
+                $inMethodBody = $false
+                $skipUntilCloseBrace = $false
             }
             
-            return user;
+            # Keep closing braces at method/class level
+            if ($trimmed -match '^\s*}' -and $braceDepth -lt $methodBodyStartDepth) {
+                $output += $line
+            }
+            continue
         }
-
-        public bool ValidatePassword(string password)
-        {
-            if (string.IsNullOrEmpty(password))
-                return false;
-                
-            if (password.Length < 8)
-                return false;
-                
-            return password.Any(char.IsDigit) && password.Any(char.IsUpper);
+        
+        # Keep empty lines for readability
+        if ($trimmed -eq '') {
+            $output += $line
+            continue
         }
-
-        private void LogActivity(string activity, int userId)
-        {
-            var timestamp = DateTime.UtcNow;
-            var message = $"[{timestamp}] User {userId}: {activity}";
-            _logger.LogInformation(message);
+        
+        # Keep XML documentation comments
+        if ($trimmed -match '^\s*///') {
+            $output += $line
+            continue
         }
+        
+        # Keep closing braces
+        if ($trimmed -match '^\s*}') {
+            $output += $line
+            $braceDepth += $openBraces - $closeBraces
+            continue
+        }
+        
+        # Default: keep the line if we're not in a method body
+        if (-not $inMethodBody -and -not $skipUntilCloseBrace) {
+            $output += $line
+        }
+        
+        $braceDepth += $openBraces - $closeBraces
     }
+    
+    return $output -join "`n"
 }
 
-// ===== CENSORED OUTPUT =====
-using System;
-using System.Collections.Generic;
-using System.Linq;
-
-namespace MyApp.Services
-{
-    /// <summary>
-    /// Handles user management operations
-    /// </summary>
-    public class UserService
-    {
-        private readonly IUserRepository _repository;
-        private readonly ILogger _logger;
-        
-        public UserService(IUserRepository repository, ILogger logger) { }
-
-        public string AdminEmail { get; set; }
-        
-        public int MaxLoginAttempts { get; }
-
-        public async Task<User> GetUserByIdAsync(int userId) { }
-
-        public bool ValidatePassword(string password) { }
-
-        private void LogActivity(string activity, int userId) { }
+function Process-CSharpFiles {
+    param([string]$Root, [string]$Output)
+    
+    # Create output directory
+    if (-not (Test-Path $Output)) {
+        New-Item -ItemType Directory -Path $Output -Force | Out-Null
     }
+    
+    # Get all C# files
+    $allFiles = Get-ChildItem -Path $Root -Filter "*.cs" -Recurse -File -ErrorAction SilentlyContinue
+    
+    # Filter out excluded patterns
+    $filteredFiles = $allFiles | Where-Object {
+        $path = $_.FullName
+        $shouldInclude = $true
+        foreach ($pattern in $ExcludePatterns) {
+            if ($path -like $pattern) {
+                $shouldInclude = $false
+                break
+            }
+        }
+        $shouldInclude
+    }
+    
+    Write-Host "Processing $($filteredFiles.Count) C# files..." -ForegroundColor Cyan
+    
+    $processedCount = 0
+    foreach ($file in $filteredFiles) {
+        try {
+            $relativePath = $file.FullName.Replace("$Root\", "").Replace("$Root/", "")
+            $content = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+            
+            $censoredContent = Get-CensoredContent -Content $content
+            
+            # Create output path maintaining directory structure
+            $outputFile = Join-Path $Output $relativePath
+            $outputDir = Split-Path $outputFile -Parent
+            
+            if (-not (Test-Path $outputDir)) {
+                New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+            }
+            
+            $censoredContent | Out-File -FilePath $outputFile -Encoding UTF8
+            $processedCount++
+            
+            Write-Host "  ✓ $relativePath" -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "Error processing $($file.FullName): $_"
+        }
+    }
+    
+    return $processedCount
 }
+
+# Main execution
+$resolvedRoot = Resolve-Path $RootPath
+$resolvedOutput = if ([System.IO.Path]::IsPathRooted($OutputPath)) { 
+    $OutputPath 
+} else { 
+    Join-Path (Get-Location) $OutputPath 
+}
+
+Write-Host "Creating censored C# files..." -ForegroundColor Yellow
+Write-Host "Source: $resolvedRoot" -ForegroundColor Cyan
+Write-Host "Output: $resolvedOutput" -ForegroundColor Cyan
+
+$count = Process-CSharpFiles -Root $resolvedRoot -Output $resolvedOutput
+
+Write-Host "`nCompleted: $count files processed" -ForegroundColor Green
+Write-Host "Censored files saved to: $resolvedOutput" -ForegroundColor Green
