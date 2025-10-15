@@ -1,0 +1,199 @@
+<#
+.SYNOPSIS
+    Generates a repository map for C# codebases
+.PARAMETER RootPath
+    Root directory to scan (defaults to current directory)
+.PARAMETER OutputFile
+    Optional output file path
+.PARAMETER ExcludePatterns
+    Patterns to exclude (defaults to common test/generated paths)
+#>
+
+param(
+    [string]$RootPath = ".",
+    [string]$OutputFile = "",
+    [string[]]$ExcludePatterns = @("*\bin\*", "*\obj\*", "*\Migrations\*", "*.Designer.cs", "*.g.cs", "*.g.i.cs")
+)
+
+function Get-CSharpDefinitions {
+    param(
+        [string]$Content,
+        [string]$FilePath
+    )
+    
+    $definitions = @()
+    $lines = $Content -split "`r?`n"
+    $currentNamespace = ""
+    $indentStack = @()  # Track class hierarchy
+    
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        $trimmed = $line.TrimStart()
+        $indent = $line.Length - $trimmed.Length
+        
+        # Track namespace
+        if ($trimmed -match '^\s*namespace\s+([\w\.]+)') {
+            $currentNamespace = $matches[1]
+            continue
+        }
+        
+        # Skip attributes, comments, empty lines
+        if ($trimmed -match '^\s*\[' -or 
+            $trimmed -match '^\s*//' -or 
+            $trimmed -match '^\s*\*' -or
+            $trimmed -match '^\s*$') {
+            continue
+        }
+        
+        # Update indent stack (track nesting)
+        while ($indentStack.Count -gt 0 -and $indent -le $indentStack[-1].Indent) {
+            $indentStack = $indentStack[0..($indentStack.Count - 2)]
+        }
+        
+        # Match class, interface, struct, enum, record
+        if ($trimmed -match '^(public|private|protected|internal|static|abstract|sealed|partial)*\s*(class|interface|struct|enum|record)\s+(\w+)') {
+            $typeName = $matches[3]
+            $typeKind = $matches[2]
+            
+            $indentStack += @{
+                Name = $typeName
+                Type = $typeKind
+                Indent = $indent
+            }
+            
+            $definitions += [PSCustomObject]@{
+                Line = $i + 1
+                Type = $typeKind
+                Name = $typeName
+                Parent = if ($indentStack.Count -gt 1) { $indentStack[-2].Name } else { "" }
+                Namespace = $currentNamespace
+                IndentLevel = $indentStack.Count - 1
+            }
+        }
+        # Match methods and properties
+        elseif ($trimmed -match '^(public|private|protected|internal|static|virtual|override|async|abstract)*\s+[\w\<\>\[\]]+\s+(\w+)\s*(\(|=>|{|\s*{\s*get)') {
+            $memberName = $matches[2]
+            
+            # Skip common non-method patterns
+            if ($memberName -in @('get', 'set', 'init', 'return', 'if', 'for', 'while', 'switch', 'var', 'using')) {
+                continue
+            }
+            
+            # Determine if it's a property or method
+            $isProperty = $trimmed -match '{\s*get' -or $trimmed -match '=>'
+            $memberType = if ($isProperty) { "property" } else { "method" }
+            
+            $definitions += [PSCustomObject]@{
+                Line = $i + 1
+                Type = $memberType
+                Name = $memberName
+                Parent = if ($indentStack.Count -gt 0) { $indentStack[-1].Name } else { "" }
+                Namespace = $currentNamespace
+                IndentLevel = $indentStack.Count
+            }
+        }
+    }
+    
+    return $definitions
+}
+
+function Build-RepoMap {
+    param([string]$Root)
+    
+    $repoMap = @{}
+    
+    # Get all C# files
+    $allFiles = Get-ChildItem -Path $Root -Filter "*.cs" -Recurse -File -ErrorAction SilentlyContinue
+    
+    # Filter out excluded patterns
+    $filteredFiles = $allFiles | Where-Object {
+        $path = $_.FullName
+        $shouldInclude = $true
+        foreach ($pattern in $ExcludePatterns) {
+            if ($path -like $pattern) {
+                $shouldInclude = $false
+                break
+            }
+        }
+        $shouldInclude
+    }
+    
+    Write-Host "Scanning $($filteredFiles.Count) C# files..." -ForegroundColor Cyan
+    
+    foreach ($file in $filteredFiles) {
+        try {
+            $relativePath = $file.FullName.Replace("$Root\", "").Replace("$Root/", "")
+            $content = Get-Content -Path $file.FullName -Raw -ErrorAction Stop
+            
+            $definitions = Get-CSharpDefinitions -Content $content -FilePath $file.FullName
+            
+            if ($definitions.Count -gt 0) {
+                $repoMap[$relativePath] = $definitions
+            }
+        }
+        catch {
+            Write-Warning "Error processing $($file.FullName): $_"
+        }
+    }
+    
+    return $repoMap
+}
+
+function Format-RepoMap {
+    param([hashtable]$Map)
+    
+    $output = @()
+    
+    foreach ($file in ($Map.Keys | Sort-Object)) {
+        $output += "`n$file"
+        
+        $defs = $Map[$file]
+        
+        foreach ($def in $defs) {
+            $indent = "  " * $def.IndentLevel
+            
+            # Format based on type
+            $symbol = switch ($def.Type) {
+                "class"     { "○" }
+                "interface" { "◇" }
+                "struct"    { "□" }
+                "enum"      { "▪" }
+                "record"    { "◎" }
+                "method"    { "→" }
+                "property"  { "•" }
+                default     { "-" }
+            }
+            
+            $line = "$indent$symbol $($def.Name)"
+            
+            # Add parent context for methods/properties if not obvious from indentation
+            if ($def.Type -in @("method", "property") -and $def.Parent -and $def.IndentLevel -eq 0) {
+                $line += " (in $($def.Parent))"
+            }
+            
+            $output += $line
+        }
+    }
+    
+    return $output -join "`n"
+}
+
+# Main execution
+$resolvedPath = Resolve-Path $RootPath
+Write-Host "Building C# repository map for: $resolvedPath" -ForegroundColor Green
+
+$repoMap = Build-RepoMap -Root $resolvedPath
+$formattedMap = Format-RepoMap -Map $repoMap
+
+if ($OutputFile) {
+    $formattedMap | Out-File -FilePath $OutputFile -Encoding UTF8
+    Write-Host "`nRepository map saved to: $OutputFile" -ForegroundColor Green
+}
+else {
+    Write-Host "`n=== C# REPOSITORY MAP ===" -ForegroundColor Yellow
+    Write-Host $formattedMap
+}
+
+# Summary
+$totalDefs = ($repoMap.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
+Write-Host "`nFiles: $($repoMap.Count) | Definitions: $totalDefs" -ForegroundColor Cyan
