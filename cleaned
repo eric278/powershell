@@ -1,0 +1,87 @@
+// ===== ORIGINAL FILE (UserService.cs) =====
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace MyApp.Services
+{
+    /// <summary>
+    /// Handles user management operations
+    /// </summary>
+    public class UserService
+    {
+        private readonly IUserRepository _repository;
+        private readonly ILogger _logger;
+        
+        public UserService(IUserRepository repository, ILogger logger)
+        {
+            _repository = repository;
+            _logger = logger;
+        }
+
+        public string AdminEmail { get; set; } = "admin@example.com";
+        
+        public int MaxLoginAttempts { get; } = 3;
+
+        public async Task<User> GetUserByIdAsync(int userId)
+        {
+            _logger.LogInformation($"Fetching user {userId}");
+            
+            var user = await _repository.GetByIdAsync(userId);
+            
+            if (user == null)
+            {
+                throw new UserNotFoundException($"User {userId} not found");
+            }
+            
+            return user;
+        }
+
+        public bool ValidatePassword(string password)
+        {
+            if (string.IsNullOrEmpty(password))
+                return false;
+                
+            if (password.Length < 8)
+                return false;
+                
+            return password.Any(char.IsDigit) && password.Any(char.IsUpper);
+        }
+
+        private void LogActivity(string activity, int userId)
+        {
+            var timestamp = DateTime.UtcNow;
+            var message = $"[{timestamp}] User {userId}: {activity}";
+            _logger.LogInformation(message);
+        }
+    }
+}
+
+// ===== CENSORED OUTPUT =====
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace MyApp.Services
+{
+    /// <summary>
+    /// Handles user management operations
+    /// </summary>
+    public class UserService
+    {
+        private readonly IUserRepository _repository;
+        private readonly ILogger _logger;
+        
+        public UserService(IUserRepository repository, ILogger logger) { }
+
+        public string AdminEmail { get; set; }
+        
+        public int MaxLoginAttempts { get; }
+
+        public async Task<User> GetUserByIdAsync(int userId) { }
+
+        public bool ValidatePassword(string password) { }
+
+        private void LogActivity(string activity, int userId) { }
+    }
+}
