@@ -1,0 +1,42 @@
+# GitHub Copilot Content Exclusion for .NET/C# Projects
+# Paste this directly into: Repository Settings > Copilot > Content exclusion
+# Format: One path per line with - "/path" syntax
+
+# Configuration and secrets
+- "appsettings.*.json"
+- "*.config"
+- "connectionstrings.json"
+- "secrets.json"
+- ".env"
+- "*.pfx"
+- "*.key"
+
+# Build outputs and binaries
+- "/bin/**"
+- "/obj/**"
+- "*.dll"
+- "*.exe"
+
+# NuGet packages
+- "/packages/**"
+- "*.nupkg"
+
+# Auto-generated files
+- "*.Designer.cs"
+- "*.designer.cs"
+- "*.generated.cs"
+- "/Migrations/**"
+
+# Test coverage reports
+- "/TestResults/**"
+- "/coverage/**"
+- "*.coverage"
+
+# User-specific files
+- "*.user"
+- "*.suo"
+- ".vs/**"
+
+# Database files
+- "*.mdf"
+- "*.ldf"
